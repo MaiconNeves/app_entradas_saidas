@@ -7,9 +7,11 @@ import streamlit as st
 # Configuração da página
 st.set_page_config(page_title="MVP Varejo - Kardex Consolidado", page_icon="📊", layout="wide")
 
+
 def _strip_ns(tag: str) -> str:
     """Remove o namespace XML da tag."""
     return tag.split("}", 1)[-1] if "}" in tag else tag
+
 
 def processar_arquivos_enviados(arquivos_entrada, arquivos_saida):
     dados_relatorio = []
@@ -31,7 +33,7 @@ def processar_arquivos_enviados(arquivos_entrada, arquivos_saida):
 
                 for elem in root.iter():
                     elem.tag = _strip_ns(elem.tag)
-                
+
                 inf_nfe = root.find('.//infNFe')
                 if inf_nfe is None:
                     continue
@@ -65,8 +67,9 @@ def processar_arquivos_enviados(arquivos_entrada, arquivos_saida):
 
     return pd.DataFrame(dados_relatorio)
 
+
 # --- INTERFACE STREAMLIT ---
-st.title("📊 MVP Varejo — Consolidado Diário (Entradas x Saídas)")
+st.title("📊 MVP Varejo — Kardex Consolidado (Entradas x Saídas)")
 
 # --- UPLOAD DE ARQUIVOS NA BARRA LATERAL ---
 st.sidebar.header("📂 1. Importar XMLs")
@@ -124,8 +127,10 @@ if df_filtrado.empty:
     st.warning("Nenhuma movimentação encontrada para os filtros selecionados.")
     st.stop()
 
-# --- CONSOLIDAÇÃO POR DIA E SKU ---
-df_consolidado = df_filtrado.pivot_table(
+# ==============================================================================
+# 1. CONSOLIDAÇÃO POR DIA E SKU
+# ==============================================================================
+df_consolidado_dia = df_filtrado.pivot_table(
     index=["Data_Obj", "SKU", "Produto"],
     columns="Tipo",
     values="Quantidade",
@@ -133,41 +138,77 @@ df_consolidado = df_filtrado.pivot_table(
     fill_value=0
 ).reset_index()
 
-if "Entrada" not in df_consolidado.columns:
-    df_consolidado["Entrada"] = 0.0
-if "Saida" not in df_consolidado.columns:
-    df_consolidado["Saida"] = 0.0
+if "Entrada" not in df_consolidado_dia.columns:
+    df_consolidado_dia["Entrada"] = 0.0
+if "Saida" not in df_consolidado_dia.columns:
+    df_consolidado_dia["Saida"] = 0.0
 
-df_consolidado = df_consolidado.sort_values(by=["Data_Obj", "SKU"])
-
-df_consolidado["Dia"] = pd.to_datetime(df_consolidado["Data_Obj"]).dt.strftime("%d/%m/%Y")
-df_consolidado = df_consolidado.rename(columns={
+df_consolidado_dia = df_consolidado_dia.sort_values(by=["Data_Obj", "SKU"])
+df_consolidado_dia["Dia"] = pd.to_datetime(df_consolidado_dia["Data_Obj"]).dt.strftime("%d/%m/%Y")
+df_consolidado_dia = df_consolidado_dia.rename(columns={
     "Entrada": "QTDE_ENTRADA",
     "Saida": "QTDE_SAIDA"
 })
 
-colunas_finais = ["Dia", "SKU", "Produto", "QTDE_ENTRADA", "QTDE_SAIDA"]
-df_exibicao = df_consolidado[colunas_finais]
+colunas_dia = ["Dia", "SKU", "Produto", "QTDE_ENTRADA", "QTDE_SAIDA"]
+df_exibicao_dia = df_consolidado_dia[colunas_dia]
+
+# ==============================================================================
+# 2. CONSOLIDAÇÃO POR SKU (TODAS AS ENTRADAS E SAÍDAS NO PERÍODO)
+# ==============================================================================
+df_consolidado_sku = df_filtrado.pivot_table(
+    index=["SKU", "Produto"],
+    columns="Tipo",
+    values="Quantidade",
+    aggfunc="sum",
+    fill_value=0
+).reset_index()
+
+if "Entrada" not in df_consolidado_sku.columns:
+    df_consolidado_sku["Entrada"] = 0.0
+if "Saida" not in df_consolidado_sku.columns:
+    df_consolidado_sku["Saida"] = 0.0
+
+df_consolidado_sku["SALDO_PERIODO"] = df_consolidado_sku["Entrada"] - df_consolidado_sku["Saida"]
+df_consolidado_sku = df_consolidado_sku.sort_values(by=["SKU"])
+
+df_consolidado_sku = df_consolidado_sku.rename(columns={
+    "Entrada": "TOTAL_ENTRADA",
+    "Saida": "TOTAL_SAIDA"
+})
+
+colunas_sku = ["SKU", "Produto", "TOTAL_ENTRADA", "TOTAL_SAIDA", "SALDO_PERIODO"]
+df_exibicao_sku = df_consolidado_sku[colunas_sku]
 
 # --- MÉTRICAS NO TOPO ---
-m1, m2, m3 = st.columns(3)
-m1.metric("Linhas Consolidadas (Dia/SKU)", len(df_exibicao))
-m2.metric("Total QTDE_ENTRADA", f"{df_exibicao['QTDE_ENTRADA'].sum():,.2f}")
-m3.metric("Total QTDE_SAIDA", f"{df_exibicao['QTDE_SAIDA'].sum():,.2f}")
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("SKUs Únicos", len(df_exibicao_sku))
+m2.metric("Total Entradas", f"{df_exibicao_sku['TOTAL_ENTRADA'].sum():,.2f}")
+m3.metric("Total Saídas", f"{df_exibicao_sku['TOTAL_SAIDA'].sum():,.2f}")
+m4.metric("Saldo Líquido", f"{df_exibicao_sku['SALDO_PERIODO'].sum():,.2f}")
 
 st.divider()
 
-# --- TABELA CONSOLIDADA ---
-st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+# --- ABAS NA INTERFACE ---
+aba_sku, aba_dia = st.tabs(["📦 Consolidado por SKU", "📅 Consolidado Diário (Dia x SKU)"])
 
-# --- DOWNLOAD EXCEL ---
+with aba_sku:
+    st.subheader("Resumo Total por SKU no Período Filtrado")
+    st.dataframe(df_exibicao_sku, use_container_width=True, hide_index=True)
+
+with aba_dia:
+    st.subheader("Movimentação Detalhada por Dia e SKU")
+    st.dataframe(df_exibicao_dia, use_container_width=True, hide_index=True)
+
+# --- DOWNLOAD EXCEL (COM AS DUAS ABAS) ---
 buffer = io.BytesIO()
 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-    df_exibicao.to_excel(writer, index=False, sheet_name="Consolidado_Diario")
+    df_exibicao_sku.to_excel(writer, index=False, sheet_name="Consolidado_SKU")
+    df_exibicao_dia.to_excel(writer, index=False, sheet_name="Consolidado_Diario")
 
 st.download_button(
-    label="📥 Baixar Consolidado Diário (Excel)",
+    label="📥 Baixar Relatório Completo (Excel com 2 Abas)",
     data=buffer.getvalue(),
-    file_name=f"Consolidado_SKU_{data_de.strftime('%d%m')}_a_{data_ate.strftime('%d%m')}.xlsx",
+    file_name=f"Kardex_Consolidado_{data_de.strftime('%d%m')}_a_{data_ate.strftime('%d%m')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
